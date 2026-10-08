@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+server/sessions.json
+server/sessions.json.tmp
+logs/
+capture.wav
+capture/audio-capture

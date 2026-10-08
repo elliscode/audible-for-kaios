@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=240, initial-scale=1, user-scalable=no">
+<title>Audible</title>
+<!-- Filled in by the server (server/index.js appPage): the session's CSRF token, the playback
+     buffer and status-poll settings, and style.css
+     and app.js inlined, so every request after the page itself is an XHR carrying the token. -->
+<!--CSRF-->
+<!--STYLE-->
+</head>
+<body>
+<div id="player" class="screen">
+<div class="top"><span>AUDIBLE</span><span id="state">...</span></div>
+<div id="title"></div>
+<div id="chapter"></div>
+<div id="time"></div>
+<div id="book"></div>
+<div id="controls">
+<button id="back" type="button">-30</button>
+<button id="toggle" type="button">PLAY</button>
+<button id="fwd" type="button">+30</button>
+</div>
+<button id="libraryBtn" type="button">LIBRARY</button>
+<div id="msg"></div>
+<div class="keys">5 play &middot; 4/6 -30/+30 &middot; 1 library<br>2/8 volume &middot; 0 reconnect</div>
+</div>
+<div id="library" class="screen">
+<div class="top"><span>LIBRARY</span><span id="libState"></span></div>
+<div id="list"></div>
+<div class="keys">2/8 move &middot; 5 play &middot; 1 back &middot; 0 refresh</div>
+</div>
+<audio id="audio" preload="none"></audio>
+<!--SCRIPT-->
+</body>
+</html>

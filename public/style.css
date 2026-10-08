@@ -1,0 +1,153 @@
+/* Usable area is exactly 240x276 at the top-left. Nothing may exceed it. */
+* {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 240px;
+  height: 276px;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  font-family: sans-serif;
+}
+
+/* Two screens (player, library), one shown at a time by app.js. */
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 240px;
+  height: 276px;
+  padding: 4px 6px;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: bold;
+  color: #f90;
+  border-bottom: 1px solid #444;
+  padding-bottom: 3px;
+}
+
+#state,
+#libState {
+  color: #aaa;
+}
+
+/* Up to two lines of title, then cut off. */
+#title {
+  font-size: 16px;
+  line-height: 20px;
+  max-height: 40px;
+  overflow: hidden;
+}
+
+#chapter {
+  font-size: 13px;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#time {
+  font-size: 20px;
+  line-height: 24px;
+  font-family: monospace;
+}
+
+#book {
+  font-size: 12px;
+  color: #aaa;
+}
+
+#controls {
+  display: flex;
+  gap: 4px;
+}
+
+#controls button {
+  height: 36px;
+  font-size: 16px;
+  font-weight: bold;
+  background: #333;
+  color: #fff;
+}
+
+#back,
+#fwd {
+  width: 56px;
+}
+
+#toggle {
+  flex: 1;
+  background: #f90 !important;
+  color: #000 !important;
+}
+
+#libraryBtn {
+  height: 26px;
+  font-size: 13px;
+  font-weight: bold;
+  background: #333;
+  color: #fff;
+}
+
+#msg {
+  min-height: 16px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #fc6;
+}
+
+.keys {
+  margin-top: auto;
+  font-size: 10px;
+  line-height: 13px;
+  color: #888;
+}
+
+/* Library list: scrolls inside the screen; the highlighted row is .sel. */
+#list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.item {
+  padding: 3px 4px;
+  border-bottom: 1px solid #222;
+}
+
+.item.sel {
+  background: #f90;
+  color: #000;
+}
+
+.item .t {
+  font-size: 13px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item .s {
+  font-size: 11px;
+  line-height: 14px;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item.sel .s {
+  color: #333;
+}

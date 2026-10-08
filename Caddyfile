@@ -1,0 +1,27 @@
+# Caddy: HTTPS for the phone page. Run from this folder with:  caddy run --config Caddyfile
+# Needs the audible.elliscode.com A record pointing at this home's public IP, and router TCP 443
+# forwarded to this Mac. Caddy gets and renews the Let's Encrypt certificate by itself (port 443
+# only). It passes the real client IP to the server in X-Forwarded-For, which the login's
+# home-network check relies on.
+#
+# Only one Caddy can own port 443. On a Mac that also serves other sites, copy this block into the
+# Caddyfile that serves them.
+
+audible.elliscode.com {
+	reverse_proxy 127.0.0.1:8090 {
+		# Send the endless audio stream on as it arrives, never buffered.
+		flush_interval -1
+	}
+}
+
+# Optional: direct LAN access while DNS/port forwarding isn't set up, or if the router can't loop
+# the public address back to the LAN. Replace the IP with this Mac's LAN IP. Uses Caddy's own
+# certificate, so the phone shows a warning once. Logins here get their own cookie (it's a
+# different address).
+#
+# https://192.168.0.103 {
+# 	tls internal
+# 	reverse_proxy 127.0.0.1:8090 {
+# 		flush_interval -1
+# 	}
+# }

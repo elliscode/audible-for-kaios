@@ -1,0 +1,260 @@
+// Remote control for the Audible tab in the Chrome started by scripts/start-chrome.sh.
+//
+// - Attaches over the Chrome DevTools Protocol (127.0.0.1:9222), so the server can restart without
+//   touching Chrome or playback, and Chrome itself is a normal Chrome with Widevine.
+// - Controls press Audible's own buttons (selectors.js). Nothing here changes the media element;
+//   it's only read for status (playing / position) when the page's text isn't found.
+// - Actions run one at a time.
+// - The library is read from Audible's own library page (fetched inside an Audible tab, so it uses
+//   the logged-in session), and a book is opened by pointing the player tab at the same player URL
+//   that the library's "Listen now" button opens.
+const { chromium } = require('playwright-core');
+const sel = require('./selectors');
+const config = require('./config');
+
+const CDP_URL = config.CDP_URL;
+const CLICK_TIMEOUT_MS = 3000;
+const SKIP_SECONDS = 30;
+const PLAYER_LOAD_TIMEOUT_MS = 30000;
+const LIBRARY_PAGE_SIZE = 50;
+const LIBRARY_MAX_PAGES = 20;
+
+let browser = null;
+let connecting = null;
+let queue = Promise.resolve();
+
+function connect() {
+  if (browser && browser.isConnected()) return Promise.resolve(browser);
+  if (!connecting) {
+    connecting = chromium.connectOverCDP(CDP_URL).then((b) => {
+      browser = b;
+      console.log('[browser] connected to Chrome at ' + CDP_URL);
+      b.on('disconnected', () => {
+        if (browser === b) browser = null;
+        console.log('[browser] Chrome disconnected');
+      });
+      return b;
+    }, (err) => {
+      // Playwright's message includes a multi-line call log; keep the reason only.
+      throw new Error('Chrome not reachable at ' + CDP_URL + ' (run scripts/start-chrome.sh): ' +
+        err.message.split('\n')[0].replace(/^browserType\.connectOverCDP: /, ''));
+    }).finally(() => { connecting = null; });
+  }
+  return connecting;
+}
+
+// The player tab, or null if Audible's player isn't open.
+async function playerPage() {
+  const b = await connect();
+  for (const context of b.contexts()) {
+    for (const page of context.pages()) {
+      if (sel.playerUrl.test(page.url())) return page;
+    }
+  }
+  return null;
+}
+
+// Any tab on Audible's site (the player, or else e.g. the library), or null.
+async function audiblePage() {
+  const player = await playerPage();
+  if (player) return player;
+  for (const context of browser.contexts()) {
+    for (const page of context.pages()) {
+      if (sel.audibleUrl.test(page.url())) return page;
+    }
+  }
+  return null;
+}
+
+// Runs fn() after any earlier action finishes.
+function serial(fn) {
+  const run = queue.then(fn);
+  queue = run.catch(() => {});
+  return run;
+}
+
+// Like serial, with the player tab. Throws if Chrome or the player isn't there.
+function act(fn) {
+  return serial(async () => {
+    const page = await playerPage();
+    if (!page) throw new Error('Audible player is not open');
+    return fn(page);
+  });
+}
+
+// Clicks the first visible element matching any selector in the list.
+async function clickFirst(page, selectors, name) {
+  for (const s of selectors) {
+    const loc = page.locator(s).first();
+    if (await loc.isVisible().catch(() => false)) {
+      await loc.click({ timeout: CLICK_TIMEOUT_MS });
+      return;
+    }
+  }
+  throw new Error('No ' + name + ' button found (update server/selectors.js)');
+}
+
+// Runs inside the page: text of the first visible match per field, plus media element state.
+// Audible's player is built from web components, so this looks inside open shadow roots too.
+function readPage(lists) {
+  function deepAll(selector) {
+    const out = [];
+    (function walk(root) {
+      out.push.apply(out, root.querySelectorAll(selector));
+      const all = root.querySelectorAll('*');
+      for (let i = 0; i < all.length; i++) if (all[i].shadowRoot) walk(all[i].shadowRoot);
+    })(document);
+    return out;
+  }
+  function text(selectors) {
+    for (const s of selectors) {
+      for (const el of deepAll(s)) {
+        const t = (el.innerText || el.textContent || '').trim();
+        if (t && el.getClientRects().length) return t.split('\n')[0].slice(0, 200);
+      }
+    }
+    return null;
+  }
+  const media = deepAll('audio, video');
+  const active = media.filter((m) => m.currentSrc || m.src)[0] || media[0] || null;
+  return {
+    playing: media.some((m) => !m.paused && !m.ended),
+    title: text(lists.title),
+    chapter: text(lists.chapter),
+    elapsed: text(lists.elapsed),
+    remaining: text(lists.remaining),
+    bookLeft: text(lists.bookLeft),
+    mediaTime: active && isFinite(active.currentTime) ? active.currentTime : null,
+    mediaDuration: active && isFinite(active.duration) ? active.duration : null,
+    rate: active ? active.playbackRate : 1, // narration speed, so the phone's clock can keep pace
+  };
+}
+
+async function isPlaying(page) {
+  return page.evaluate(() =>
+    Array.prototype.some.call(document.querySelectorAll('audio, video'), (m) => !m.paused && !m.ended));
+}
+
+function toggle() {
+  return act((page) => clickFirst(page, sel.playPause, 'play/pause'));
+}
+
+function play() {
+  return act(async (page) => {
+    if (await isPlaying(page)) return;
+    // If another device took over, Audible shows a dialog instead; its button also starts playback.
+    for (const s of sel.takeOver) {
+      const loc = page.locator(s).first();
+      if (await loc.isVisible().catch(() => false)) {
+        await loc.click({ timeout: CLICK_TIMEOUT_MS });
+        await page.waitForTimeout(1500);
+        if (await isPlaying(page)) return;
+        break;
+      }
+    }
+    await clickFirst(page, sel.playPause, 'play/pause');
+  });
+}
+
+function pause() {
+  return act(async (page) => {
+    if (await isPlaying(page)) await clickFirst(page, sel.playPause, 'play/pause');
+  });
+}
+
+// Seeks by whole 30 s skips using Audible's skip buttons.
+function seek(deltaSeconds) {
+  const steps = Math.min(20, Math.round(Math.abs(deltaSeconds) / SKIP_SECONDS));
+  const list = deltaSeconds < 0 ? sel.back30 : sel.forward30;
+  return act(async (page) => {
+    for (let i = 0; i < steps; i++) await clickFirst(page, list, deltaSeconds < 0 ? 'skip back' : 'skip forward');
+  });
+}
+
+// Runs inside an Audible tab: reads every page of the library. Returns
+// [{ asin, title, author, left, deliveryType }], where left is e.g. "32h 8m left" for started books.
+async function readLibrary(opts) {
+  const books = [];
+  for (let page = 1; page <= opts.maxPages; page++) {
+    const res = await fetch('/library/titles?pageSize=' + opts.pageSize + '&page=' + page, { credentials: 'include' });
+    if (!res.ok) throw new Error('Library page ' + page + ': HTTP ' + res.status);
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    const rows = doc.querySelectorAll(opts.row);
+    for (const row of rows) {
+      const asin = row.id.slice(opts.rowIdPrefix.length);
+      const titleEl = row.querySelector(opts.title);
+      const authors = Array.from(row.querySelectorAll(opts.author)).map((a) => a.textContent.trim());
+      const left = row.textContent.replace(/\s+/g, ' ').match(/(\d+h )?\d+m left/);
+      const asinInput = doc.querySelector('input[name="asin"][value="' + asin + '"]');
+      const typeInput = asinInput && asinInput.parentElement.querySelector('input[name="contentDeliveryType"]');
+      books.push({
+        asin,
+        title: titleEl ? titleEl.textContent.trim() : asin,
+        author: authors.join(', '),
+        left: left ? left[0] : null,
+        deliveryType: typeInput ? typeInput.value : null,
+      });
+    }
+    if (rows.length < opts.pageSize) break;
+  }
+  return books;
+}
+
+// The whole library, books already started first (each group in Audible's "date added" order).
+function library() {
+  return serial(async () => {
+    await connect();
+    const page = await audiblePage();
+    if (!page) throw new Error('No Audible tab open in Chrome');
+    const books = await page.evaluate(readLibrary, {
+      pageSize: LIBRARY_PAGE_SIZE, maxPages: LIBRARY_MAX_PAGES,
+      row: sel.library.row, rowIdPrefix: sel.library.rowIdPrefix, title: sel.library.title, author: sel.library.author,
+    });
+    return books.filter((b) => b.left).concat(books.filter((b) => !b.left));
+  });
+}
+
+// Opens a book in the player tab (or a new tab if there's none). Audible resumes it where it was
+// left off. Resolves once the player's play/pause button is showing.
+function openBook(asin, deliveryType) {
+  return serial(async () => {
+    await connect();
+    let page = await playerPage();
+    const base = page || await audiblePage();
+    if (!base) throw new Error('No Audible tab open in Chrome');
+    const url = new URL(base.url()).origin + '/webplayer?asin=' + encodeURIComponent(asin) +
+      '&contentDeliveryType=' + encodeURIComponent(deliveryType || 'SinglePartBook') +
+      '&isSample=false&overrideLph=false&initialCPLaunch=true';
+    if (page) {
+      // Pause first, so Audible saves the current book's position.
+      if (await isPlaying(page)) await clickFirst(page, sel.playPause, 'play/pause').catch(() => {});
+    } else {
+      page = await base.context().newPage();
+    }
+    const acceptLeave = (dialog) => dialog.accept().catch(() => {}); // "Leave site?" prompts
+    page.on('dialog', acceptLeave);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYER_LOAD_TIMEOUT_MS });
+    } finally {
+      page.off('dialog', acceptLeave);
+    }
+    await page.locator(sel.playPause.join(', ')).first().waitFor({ state: 'visible', timeout: PLAYER_LOAD_TIMEOUT_MS });
+    console.log('[browser] opened ' + asin);
+  });
+}
+
+// Never throws: reports what's reachable.
+async function status() {
+  try {
+    const page = await playerPage();
+    if (!page) return { browser: true, player: false };
+    const s = await page.evaluate(readPage,
+      { title: sel.title, chapter: sel.chapter, elapsed: sel.elapsed, remaining: sel.remaining, bookLeft: sel.bookLeft });
+    const asin = new URL(page.url()).searchParams.get('asin');
+    return Object.assign({ browser: true, player: true, asin }, s);
+  } catch (err) {
+    return { browser: !!(browser && browser.isConnected()), player: false, error: err.message };
+  }
+}
+
+module.exports = { connect, playerPage, toggle, play, pause, seek, status, library, openBook };
