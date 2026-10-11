@@ -23,25 +23,32 @@ if (AUTH_OFF && HOST !== '127.0.0.1' && HOST !== 'localhost') {
   process.exit(1);
 }
 
-// --- Auto-pause: nobody listening for a while -> pause Audible, so a dropped phone doesn't leave
-// the book playing for hours. ---------------------------------------------------------------------
+// --- Auto-pause: Audible playing with nobody listening for a while -> pause it, so a dropped phone
+// (or Audible starting by itself) doesn't leave the book playing for hours. ------------------------
 
-let autoPauseTimer = null;
+const WATCH_MS = 15 * 1000;
+let unheardSince = null;
+let lastWatchError = null; // logged once, not every 15 s while Chrome is down
 
-audio.events.on('listeners', (count) => {
-  if (count > 0) {
-    clearTimeout(autoPauseTimer);
-    autoPauseTimer = null;
-  } else if (!autoPauseTimer) {
-    autoPauseTimer = setTimeout(() => {
-      autoPauseTimer = null;
-      if (audio.listenerCount() > 0) return;
-      browser.pause()
-        .then(() => console.log('[auto-pause] no listeners for ' + AUTO_PAUSE_MS / 1000 + ' s, paused Audible'))
-        .catch((err) => console.log('[auto-pause] ' + err.message));
-    }, AUTO_PAUSE_MS);
-  }
-});
+setInterval(() => {
+  if (audio.listenerCount() > 0) { unheardSince = null; return; }
+  browser.playing().then((playing) => {
+    if (!playing || audio.listenerCount() > 0) { unheardSince = null; return; }
+    if (!unheardSince) unheardSince = Date.now();
+    if (Date.now() - unheardSince < AUTO_PAUSE_MS) return;
+    unheardSince = null;
+    return browser.pause()
+      .then(() => console.log('[auto-pause] playing with no phone listening for ' + AUTO_PAUSE_MS / 1000 + ' s, paused Audible'));
+  }).then(() => { lastWatchError = null; }, (err) => {
+    if (err.message !== lastWatchError) console.log('[auto-pause] ' + err.message);
+    lastWatchError = err.message;
+  });
+}, WATCH_MS);
+
+// Reloads the player page well before Audible's own 24 h restart (browser.refreshIfOld).
+setInterval(() => {
+  browser.refreshIfOld().catch((err) => console.log('[browser] player reload: ' + err.message));
+}, 60 * 1000);
 
 // --- App ---------------------------------------------------------------------------------------
 
@@ -80,6 +87,12 @@ app.get('/login.js', (req, res) => {
 });
 
 app.post('/login', auth.login);
+
+// The icon, before the login gate so the login page shows it too. /favicon.ico is what browsers ask for
+// when a page names no icon; a PNG under that name works everywhere.
+app.get('/favicon.svg', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'favicon.svg'), { maxAge: '1d' }));
+app.get(['/favicon.png', '/favicon.ico'], (req, res) =>
+  res.type('png').sendFile(path.join(PUBLIC_DIR, 'favicon.png'), { maxAge: '1d' }));
 
 // The audio itself: session cookie plus a single-use ticket (an <audio> element can't send the
 // CSRF header).

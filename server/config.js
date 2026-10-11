@@ -19,8 +19,15 @@ const settings = {
 
   // --- Playback -------------------------------------------------------------------------------
 
-  // Pause Audible after this many seconds with no phone listening (e.g. it dropped off Wi-Fi).
+  // Pause Audible after it has played this many seconds with no phone listening (e.g. the phone
+  // dropped off Wi-Fi, or Audible started by itself).
   AUTO_PAUSE_SECONDS: 60,
+
+  // Audible's web player restarts the book from the beginning about 24 h after its page loaded,
+  // so the server reloads the page first: after this many hours, whenever Audible is paused...
+  PLAYER_RELOAD_HOURS: 12,
+  // ...and after this many, even while playing (pause, reload, play; a few seconds' gap).
+  PLAYER_MAX_HOURS: 23,
 
   // The capture device (the Mac's sound output must be set to it; scripts/start-chrome.sh does).
   AUDIO_DEVICE: 'BlackHole 2ch',

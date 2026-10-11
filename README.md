@@ -19,7 +19,8 @@ KaiOS browser --HTTPS--> Caddy (:443, audible.elliscode.com) --> Node server (12
   - play/pause
   - skip back/forward 30 s
   - If Audible shows "Another device is active" (the Audible app took over), play presses "Listen on this device".
-- **Auto-pause:** if no phone has been listening for 60 s, Audible is paused, so a dropped connection doesn't play the book on for hours.
+- **Auto-pause:** if Audible plays for 60 s with no phone listening, it's paused, so a dropped connection (or Audible starting by itself) doesn't play the book on for hours.
+- **Player refresh:** about 24 h after its page loads, Audible's web player restarts the book from the very beginning by itself ("This is Audible"), and that position is saved over the real one. So the server reloads the page first: after 12 h whenever Audible has been paused for a minute, or at 23 h even while playing (pause, reload, play: a gap of about 7 s). The reloaded player resumes from the saved position. If it comes back in a different chapter, it's left paused.
 
 ## Phone keys
 
@@ -118,7 +119,8 @@ All settings are in [`server/config.js`](server/config.js), each with a comment.
 | --- | --- | --- |
 | `BUFFER_SECONDS` | `4` | Seconds the phone buffers (with an on-screen countdown) before playing. `0` plays at once |
 | `STATUS_POLL_SECONDS` | `60` | Seconds between the phone's status readings. In between, the phone counts the time itself while playing. It also reads after every action and at each chapter's end |
-| `AUTO_PAUSE_SECONDS` | `60` | Pause Audible after this long with no phone listening |
+| `AUTO_PAUSE_SECONDS` | `60` | Pause Audible after it plays this long with no phone listening |
+| `PLAYER_RELOAD_HOURS` / `PLAYER_MAX_HOURS` | `12` / `23` | Reload the player page once it's this old: while paused / even while playing |
 | `AUDIO_DEVICE` / `AUDIO_BITRATE` | `BlackHole 2ch` / `64k` | Capture device and MP3 bitrate (mono) |
 | `HOST` / `PORT` | `127.0.0.1` / `8090` | Server address (Caddy forwards to it) |
 | `PUBLIC_HOST` | `audible.elliscode.com` | Its IP counts as "home" for login |

@@ -18,6 +18,16 @@ const SKIP_SECONDS = 30;
 const PLAYER_LOAD_TIMEOUT_MS = 30000;
 const LIBRARY_PAGE_SIZE = 50;
 const LIBRARY_MAX_PAGES = 20;
+const HOUR_MS = 60 * 60 * 1000;
+const RELOAD_MS = config.PLAYER_RELOAD_HOURS * HOUR_MS;
+const MAX_AGE_MS = config.PLAYER_MAX_HOURS * HOUR_MS;
+// A reload while paused waits until Audible has been paused this long, so its position is saved.
+const PAUSED_BEFORE_RELOAD_MS = 60 * 1000;
+// After pausing to reload a playing book, time for Audible to save the position.
+const SAVE_WAIT_MS = 5000;
+// A freshly loaded player shows its chapter a moment after its controls, and starts playing by
+// itself a few seconds later. How long to wait for the one and watch for the other.
+const SETTLE_MS = 15000;
 
 let browser = null;
 let connecting = null;
@@ -139,21 +149,24 @@ function toggle() {
   return act((page) => clickFirst(page, sel.playPause, 'play/pause'));
 }
 
-function play() {
-  return act(async (page) => {
-    if (await isPlaying(page)) return;
-    // If another device took over, Audible shows a dialog instead; its button also starts playback.
-    for (const s of sel.takeOver) {
-      const loc = page.locator(s).first();
-      if (await loc.isVisible().catch(() => false)) {
-        await loc.click({ timeout: CLICK_TIMEOUT_MS });
-        await page.waitForTimeout(1500);
-        if (await isPlaying(page)) return;
-        break;
-      }
+// Starts playback. If another device took over, Audible shows a dialog instead; its button also
+// starts playback.
+async function pressPlay(page) {
+  if (await isPlaying(page)) return;
+  for (const s of sel.takeOver) {
+    const loc = page.locator(s).first();
+    if (await loc.isVisible().catch(() => false)) {
+      await loc.click({ timeout: CLICK_TIMEOUT_MS });
+      await page.waitForTimeout(1500);
+      if (await isPlaying(page)) return;
+      break;
     }
-    await clickFirst(page, sel.playPause, 'play/pause');
-  });
+  }
+  await clickFirst(page, sel.playPause, 'play/pause');
+}
+
+function play() {
+  return act(pressPlay);
 }
 
 function pause() {
@@ -231,16 +244,102 @@ function openBook(asin, deliveryType) {
     } else {
       page = await base.context().newPage();
     }
-    const acceptLeave = (dialog) => dialog.accept().catch(() => {}); // "Leave site?" prompts
-    page.on('dialog', acceptLeave);
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYER_LOAD_TIMEOUT_MS });
-    } finally {
-      page.off('dialog', acceptLeave);
-    }
-    await page.locator(sel.playPause.join(', ')).first().waitFor({ state: 'visible', timeout: PLAYER_LOAD_TIMEOUT_MS });
+    await loadPlayer(page, url);
     console.log('[browser] opened ' + asin);
   });
+}
+
+// Points the tab at a player URL, accepting any "Leave site?" prompt, and waits until the
+// play/pause button shows.
+async function loadPlayer(page, url) {
+  const acceptLeave = (dialog) => dialog.accept().catch(() => {});
+  page.on('dialog', acceptLeave);
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYER_LOAD_TIMEOUT_MS });
+  } finally {
+    page.off('dialog', acceptLeave);
+  }
+  await page.locator(sel.playPause.join(', ')).first().waitFor({ state: 'visible', timeout: PLAYER_LOAD_TIMEOUT_MS });
+}
+
+// --- Player refresh ------------------------------------------------------------------------------
+// About 24 h after its page loads, Audible's web player starts the book over by itself: it plays
+// the "This is Audible" intro from the very start, and that position is then saved over the real
+// one (seen twice, 8-10 s after the 24 h mark, playing or paused). So the page is reloaded before
+// then: once it's PLAYER_RELOAD_HOURS old, whenever Audible has been paused for a minute; if it's
+// still playing at PLAYER_MAX_HOURS, by pausing, reloading and playing again. Audible saves the
+// position on pause, and the reloaded player resumes from it.
+
+let pausedSince = null;
+
+// Chapter and time, for the log.
+async function where(page) {
+  const s = await page.evaluate(readPage,
+    { title: [], chapter: sel.chapter, elapsed: sel.elapsed, remaining: [], bookLeft: [] });
+  return { chapter: s.chapter, text: (s.chapter || '?') + ' ' + (s.elapsed || '?') };
+}
+
+// Waits (up to SETTLE_MS) for a freshly loaded player to show its chapter.
+async function settled(page) {
+  const end = Date.now() + SETTLE_MS;
+  let w = await where(page);
+  while (!w.chapter && Date.now() < end) {
+    await page.waitForTimeout(500);
+    w = await where(page);
+  }
+  return w;
+}
+
+// Pauses any playback the player starts by itself during the next SETTLE_MS.
+async function keepPaused(page) {
+  const end = Date.now() + SETTLE_MS;
+  while (Date.now() < end) {
+    if (await isPlaying(page)) await clickFirst(page, sel.playPause, 'play/pause');
+    await page.waitForTimeout(500);
+  }
+}
+
+// Called every minute. Never throws for a missing Chrome or player.
+function refreshIfOld() {
+  return serial(async () => {
+    const page = await playerPage().catch(() => null);
+    if (!page) return;
+    const playing = await isPlaying(page);
+    if (playing) pausedSince = null;
+    else if (!pausedSince) pausedSince = Date.now();
+
+    // The page's own load time, so a page opened by hand or before a server restart counts too.
+    const ageMs = Date.now() - await page.evaluate(() => performance.timeOrigin);
+    if (ageMs < RELOAD_MS) return;
+    if (playing ? ageMs < MAX_AGE_MS : Date.now() - pausedSince < PAUSED_BEFORE_RELOAD_MS) return;
+
+    const before = await where(page);
+    if (playing) {
+      await clickFirst(page, sel.playPause, 'play/pause');
+      await page.waitForTimeout(SAVE_WAIT_MS);
+    }
+    await loadPlayer(page, page.url());
+    pausedSince = null;
+    const after = await settled(page);
+    const ageText = (ageMs / HOUR_MS).toFixed(1) + ' h';
+    console.log('[browser] reloaded the player (page was ' + ageText + ' old): ' + before.text + ' -> ' + after.text);
+
+    // Only a book that was playing, and came back in the same chapter, plays again. Anything else
+    // (a different chapter means the position didn't carry over) is held paused, so the wrong
+    // position isn't played and saved.
+    if (playing && before.chapter && before.chapter === after.chapter) {
+      await pressPlay(page);
+    } else {
+      if (playing) console.log('[browser] not resuming: the reloaded player shows a different chapter');
+      await keepPaused(page);
+    }
+  });
+}
+
+// Whether Audible is playing (false with no player open). Throws if Chrome isn't reachable.
+async function playing() {
+  const page = await playerPage();
+  return page ? isPlaying(page) : false;
 }
 
 // Never throws: reports what's reachable.
@@ -257,4 +356,4 @@ async function status() {
   }
 }
 
-module.exports = { connect, playerPage, toggle, play, pause, seek, status, library, openBook };
+module.exports = { connect, playerPage, toggle, play, pause, seek, status, library, openBook, refreshIfOld, playing };
